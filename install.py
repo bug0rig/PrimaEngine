@@ -130,7 +130,7 @@ def _init_git():
         print("    To push to GitHub:")
         print("      1. Create a repo at https://github.com/new")
         print("      2. Run:")
-        print(f"         git remote add origin https://github.com/YOUR_USER/prima-engine.git")
+        print(f"         git remote add origin https://github.com/YOUR_USER/PrimaEngine.git")
         print(f"         git push -u origin main")
 
 
