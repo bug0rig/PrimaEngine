@@ -1,0 +1,18 @@
+[build-system]
+requires = ["scikit-build-core>=0.10.0", "nanobind>=2.0.0", "numpy"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "prima-engine"
+version = "0.1.0"
+description = "Prima 3D Game Engine"
+requires-python = ">=3.10"
+dependencies = ["numpy", "PyOpenGL", "PyQt5"]
+
+[project.scripts]
+prima-server = "prima.server.cli:main"
+prima-client = "prima.client.game_client:main"
+
+[tool.scikit-build]
+cmake.version = ">=3.20"
+wheel.py-api = "cp312"
