@@ -23,6 +23,8 @@ struct Vector3 {
     Vector3 operator-(const Vector3& o) const { return {x - o.x, y - o.y, z - o.z}; }
     Vector3 operator*(float s) const { return {x * s, y * s, z * s}; }
     Vector3 operator-() const { return {-x, -y, -z}; }
+    bool operator==(const Vector3& o) const { return x == o.x && y == o.y && z == o.z; }
+    bool operator!=(const Vector3& o) const { return !(*this == o); }
 
     float length() const {
         return std::sqrt(x * x + y * y + z * z);
@@ -267,6 +269,8 @@ NB_MODULE(_math_utils, m) {
         .def(nb::self - nb::self)
         .def(nb::self * float())
         .def(-nb::self)
+        .def(nb::self == nb::self)
+        .def(nb::self != nb::self)
         .def("__repr__", &Vector3::repr)
         .def("length", &Vector3::length)
         .def("normalized", &Vector3::normalized)

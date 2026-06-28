@@ -7,7 +7,7 @@ from OpenGL import GL
 from prima.engine.camera import build_view_matrix, build_projection_matrix
 from prima.engine.math_utils import Vector3, Matrix4
 from prima.engine.rendering import create_shader_program
-from prima.engine.materials import PHYSICS_MATERIALS
+from .gizmo import Gizmo
 import math
 import numpy as np
 
@@ -43,6 +43,8 @@ class Viewport3D(QOpenGLWidget):
         self.grid_div = 10
         self.show_grid = True
         self.show_debug = False
+        self.gizmo = Gizmo()
+        self.gizmo_mode = "translate"
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -67,6 +69,14 @@ class Viewport3D(QOpenGLWidget):
 
         if self.selected_object:
             self._render_selection(view, proj)
+
+        if self.selected_object and hasattr(self, '_line_shader'):
+            self.gizmo.render(
+                self._line_shader,
+                self.selected_object.get_world_position(),
+                view, proj,
+                self.width(), self.height(),
+            )
 
         if self.show_debug:
             self._render_debug_overlay()
@@ -203,6 +213,11 @@ class Viewport3D(QOpenGLWidget):
         contact_count = len(engine.physics._world.contacts) if hasattr(engine.physics, '_world') else 0
         lines.append(f"Contacts: {contact_count}")
 
+        gizmo_mode_map = {"translate": "1", "rotate": "2", "scale": "3"}
+        snap_label = f" [SNAP={self.gizmo.snap_value}]" if self.gizmo.snap_enabled else ""
+        csnap_label = " [V-SNAP]" if self.gizmo.connector_snap_enabled else ""
+        lines.append(f"Gizmo: [{gizmo_mode_map.get(self.gizmo.mode, '?')}] {self.gizmo.mode.upper()}{snap_label}{csnap_label}")
+
         if engine.running:
             lines.append(f"Physics: RUNNING")
         else:
@@ -267,6 +282,22 @@ class Viewport3D(QOpenGLWidget):
         if event.key() == Qt.Key_F3:
             self.show_debug = not self.show_debug
             self.update()
+        elif event.key() == Qt.Key_1:
+            self.gizmo.mode = "translate"
+            self.update()
+        elif event.key() == Qt.Key_2:
+            self.gizmo.mode = "rotate"
+            self.update()
+        elif event.key() == Qt.Key_3:
+            self.gizmo.mode = "scale"
+            self.update()
+        elif event.key() == Qt.Key_V and not self.gizmo.is_dragging:
+            self.gizmo.connector_snap_enabled = not self.gizmo.connector_snap_enabled
+            self.update()
+        elif event.key() == Qt.Key_Delete and self.selected_object:
+            self._delete_selected()
+        elif event.key() == Qt.Key_D and event.modifiers() & Qt.ControlModifier and self.selected_object:
+            self._duplicate_selected()
 
     def keyReleaseEvent(self, event: QKeyEvent):
         self.keys.discard(event.key())
@@ -277,6 +308,19 @@ class Viewport3D(QOpenGLWidget):
 
     def mousePressEvent(self, event: QMouseEvent):
         self._last_mouse = (event.x(), event.y())
+        if event.button() == Qt.LeftButton and self.selected_object:
+            aspect = self.width() / max(self.height(), 1)
+            view = build_view_matrix(self.cam_position, self.cam_rotation)
+            proj = build_projection_matrix(self.cam_fov, aspect, self.cam_near, self.cam_far)
+            hit = self.gizmo.hit_test(
+                event.x(), event.y(),
+                self.selected_object.get_world_position(),
+                view, proj, self.width(), self.height(),
+            )
+            if hit:
+                self.gizmo.start_drag(hit, (event.x(), event.y()), self.selected_object.position, view, proj, self.width(), self.height())
+                return
+
         if event.button() == Qt.MiddleButton:
             self._panning = True
         elif event.button() == Qt.RightButton:
@@ -285,6 +329,8 @@ class Viewport3D(QOpenGLWidget):
             self._select_object(event.x(), event.y())
 
     def mouseReleaseEvent(self, event: QMouseEvent):
+        if self.gizmo.is_dragging:
+            self.gizmo.end_drag()
         if event.button() == Qt.MiddleButton:
             self._panning = False
         elif event.button() == Qt.RightButton:
@@ -293,11 +339,39 @@ class Viewport3D(QOpenGLWidget):
         self._last_mouse = None
 
     def mouseMoveEvent(self, event: QMouseEvent):
+        if self.gizmo.is_dragging and self.selected_object:
+            self.gizmo.snap_value = 0.05 if Qt.Key_Control in self.keys else 0.25
+            aspect = self.width() / max(self.height(), 1)
+            view = build_view_matrix(self.cam_position, self.cam_rotation)
+            proj = build_projection_matrix(self.cam_fov, aspect, self.cam_near, self.cam_far)
+            new_pos = self.gizmo.update_drag(
+                (event.x(), event.y()),
+                self.selected_object.position,
+                view, proj, self.width(), self.height(),
+                self.cam_position,
+            )
+            if new_pos is not None and self.gizmo.connector_snap_enabled:
+                new_pos = self._apply_connector_snap(new_pos)
+            if new_pos is not None:
+                self.selected_object.position = new_pos
+            return
+
         if self._last_mouse is None:
             return
         dx = event.x() - self._last_mouse[0]
         dy = event.y() - self._last_mouse[1]
         self._last_mouse = (event.x(), event.y())
+
+        if self.selected_object:
+            aspect = self.width() / max(self.height(), 1)
+            view = build_view_matrix(self.cam_position, self.cam_rotation)
+            proj = build_projection_matrix(self.cam_fov, aspect, self.cam_near, self.cam_far)
+            hit = self.gizmo.hit_test(
+                event.x(), event.y(),
+                self.selected_object.get_world_position(),
+                view, proj, self.width(), self.height(),
+            )
+            self.gizmo.hovered_axis = hit
 
         if self._orbiting:
             self.cam_rotation.y -= dx * self._orbit_speed
@@ -327,6 +401,27 @@ class Viewport3D(QOpenGLWidget):
             math.cos(self.cam_rotation.y) * math.cos(self.cam_rotation.x)
         ).normalized()
         self.cam_position = self.cam_position + forward * (-event.angleDelta().y() * self._zoom_speed)
+
+    def _apply_connector_snap(self, candidate_pos):
+        obj = self.selected_object
+        if not obj or not obj.connectors:
+            return candidate_pos
+        best = None
+        best_dist = self.gizmo.connector_snap_distance
+        for conn_a in obj.connectors:
+            wa = candidate_pos + conn_a.position
+            for other in self.engine.scene.get_all_objects():
+                if other is obj or other.object_type == "Root":
+                    continue
+                for conn_b in other.connectors:
+                    wb = other.get_world_position() + conn_b.position
+                    d = (wa - wb).length()
+                    if d < best_dist:
+                        best_dist = d
+                        best = wb - wa
+        if best is not None:
+            return candidate_pos + best
+        return candidate_pos
 
     def _select_object(self, x, y):
         objs = self.engine.scene.get_all_objects()
@@ -374,3 +469,19 @@ class Viewport3D(QOpenGLWidget):
     def reset_camera(self):
         self.cam_position = Vector3(8, 6, 8)
         self.cam_rotation = Vector3(math.radians(-25), math.radians(-135), 0)
+
+    def _delete_selected(self):
+        obj = self.selected_object
+        if obj and obj.object_type != "Root":
+            self.engine.scene.remove_object(obj)
+            self.selected_object = None
+            self.object_selected.emit(None)
+
+    def _duplicate_selected(self):
+        obj = self.selected_object
+        if obj:
+            dup = obj.duplicate()
+            parent = obj.parent or self.engine.scene.root
+            parent.add_child(dup)
+            self.selected_object = dup
+            self.object_selected.emit(dup)

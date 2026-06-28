@@ -24,12 +24,18 @@
 - `get_body()` uses `nb::rv_policy::reference` to avoid double-free
 - `set_mass()` / `set_static()` update inv_mass internally — DO NOT assign fields directly
 - `CollisionShape.make_*()` are static factory methods returning new objects — must assign result
+- GJK collision: ssize=3 checks triangle plane side before returning true (no false positive for nearly-touching boxes)
+- GJK collision: ssize=4 checks tetrahedron containment before returning true
 
 ## Physics Wrapper (prima/engine/physics.py)
 - `PhysicsEngine._body_map[obj.id] = body_id` for object↔body tracking
 - `step()` syncs Python obj → C++ body before stepping, then C++ body → Python obj after
 - New objects get `_create_body()`, existing ones get `_sync_to_body()`
 - Deleted objects have bodies removed from world
+- **Player objects use kinematic controller** (not C++ physics body):
+  - `_step_player()` handles gravity, integration, and ground raycast
+  - C++ solver friction–angular coupling causes upward drift — bypassed by kinematic controller
+  - Player is excluded from C++ physics body creation loop
 
 ## Scene Config
 - `Scene.gravity` = Vector3 (default: 0, -9.81, 0)

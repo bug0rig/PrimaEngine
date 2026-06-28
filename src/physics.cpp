@@ -4,6 +4,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 #include <nanobind/stl/optional.h>
+#include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <cfloat>
@@ -612,14 +613,48 @@ struct PhysicsWorld {
                 } else if (ab.cross(abc).dot(ao) > 0) {
                     simplex[0] = a0; simplex[1] = b0; ssize = 2;
                     dir = ab.cross(ao).cross(ab);
+                } else if (abc.dot(ao) > 0) {
+                    simplex[0] = a0; simplex[1] = b0; simplex[2] = c0; ssize = 3;
+                    dir = abc;
                 } else {
-                    // Overlap found (origin in/behind triangle)
-                    gjk_contact(a, b, simplex, 3, c);
-                    return true;
+                    simplex[0] = a0; simplex[1] = b0; simplex[2] = c0; ssize = 3;
+                    dir = -abc;
                 }
             } else if (ssize == 4) {
-                gjk_contact(a, b, simplex, 4, c);
-                return true;
+                // Check if origin is inside tetrahedron
+                Vec3 s0 = simplex[0], s1 = simplex[1], s2 = simplex[2], s3 = simplex[3];
+                Vec3 s01 = s1 - s0, s02 = s2 - s0, s03 = s3 - s0;
+                Vec3 c012 = s01.cross(s02);
+                Vec3 c013 = s01.cross(s03);
+                Vec3 c023 = s02.cross(s03);
+                Vec3 so = -s0;
+
+                // Face s0-s1-s2: check if origin is on same side as s3
+                float d012 = c012.dot(s3 - s0);
+                float d012_ao = c012.dot(so);
+                if (d012 * d012_ao <= 0) {
+                    simplex[0] = s0; simplex[1] = s1; simplex[2] = s2; ssize = 3;
+                    dir = d012_ao > 0 ? c012 : -c012;
+                } else {
+                    // Face s0-s1-s3: check if origin is on same side as s2
+                    float d013 = c013.dot(s2 - s0);
+                    float d013_ao = c013.dot(so);
+                    if (d013 * d013_ao <= 0) {
+                        simplex[0] = s0; simplex[1] = s1; simplex[2] = s3; ssize = 3;
+                        dir = d013_ao > 0 ? c013 : -c013;
+                    } else {
+                        // Face s0-s2-s3: check if origin is on same side as s1
+                        float d023 = c023.dot(s1 - s0);
+                        float d023_ao = c023.dot(so);
+                        if (d023 * d023_ao <= 0) {
+                            simplex[0] = s0; simplex[1] = s2; simplex[2] = s3; ssize = 3;
+                            dir = d023_ao > 0 ? c023 : -c023;
+                        } else {
+                            gjk_contact(a, b, simplex, 4, c);
+                            return true;
+                        }
+                    }
+                }
             }
 
             if (dir.length_sq() < EPS) dir = {1, 0, 0};
@@ -656,14 +691,17 @@ struct PhysicsWorld {
                     if (ta == ShapeType::CAPSULE) found = collide_capsule_plane(a, b, c);
                     else { found = collide_capsule_plane(b, a, c); std::swap(c.body_a, c.body_b); }
                 } else if (ta == ShapeType::PLANE || tb == ShapeType::PLANE) {
-                    continue; // plane vs other unhandled shape
+                    continue;
                 } else {
                     found = gjk_collide(a, b, c);
                 }
 
-                if (found) all_contacts.push_back(c);
+                if (found) {
+                    all_contacts.push_back(c);
+                }
             }
         }
+
         return all_contacts;
     }
 
@@ -845,11 +883,21 @@ struct PhysicsWorld {
         return best_t;
     }
 
+    float ray_vs_plane(const Vec3& origin, const Vec3& dir, const RigidBody& body) {
+        Vec3 pn(body.shape.params[0], body.shape.params[1], body.shape.params[2]);
+        float po = body.shape.params[3];
+        float nd = dir.dot(pn);
+        if (nd >= 0) return -1;
+        float t = (po - origin.dot(pn)) / nd;
+        return t >= 0 ? t : -1;
+    }
+
     float ray_vs_body(const Vec3& origin, const Vec3& dir, const RigidBody& body) {
         switch (body.shape.type) {
         case ShapeType::SPHERE:  return ray_vs_sphere(origin, dir, body);
         case ShapeType::BOX:     return ray_vs_box(origin, dir, body);
         case ShapeType::CAPSULE: return ray_vs_capsule(origin, dir, body);
+        case ShapeType::PLANE:   return ray_vs_plane(origin, dir, body);
         case ShapeType::MESH:    return ray_vs_mesh(origin, dir, body);
         default: return -1;
         }
@@ -872,6 +920,8 @@ struct PhysicsWorld {
             else n_local = {0, 0, std::copysignf(1.0f, nz)};
             return body.rotation.rotate(n_local);
         }
+        case ShapeType::PLANE:
+            return {body.shape.params[0], body.shape.params[1], body.shape.params[2]};
         default: return {0, 1, 0};
         }
     }
@@ -882,7 +932,6 @@ struct PhysicsWorld {
         Vec3 dir = direction.normalized();
 
         for (auto& body : bodies) {
-            if (body.shape.type == ShapeType::PLANE) continue;
             float t = ray_vs_body(origin, dir, body);
             if (t > 0 && t < best.distance) {
                 best.hit = true;

@@ -2,6 +2,14 @@ from .math_utils import Vector3, Matrix4
 from .materials import Material
 
 
+class Connector:
+    def __init__(self, name="", position=None, direction=None, conn_type="peg"):
+        self.name = name
+        self.position = position or Vector3.zero()
+        self.direction = direction or Vector3(0, 1, 0)
+        self.conn_type = conn_type
+
+
 class _IDGen:
     _next = 0
 
@@ -27,6 +35,8 @@ class SceneObject:
         self.material = Material.gray()
         self.color = (0.7, 0.7, 0.7)
         self.object_type = "Object"
+        self.connectors = []
+        self.physics_offset = Vector3.zero()
 
     @property
     def position(self):
@@ -146,6 +156,10 @@ class SceneObject:
         obj.size = self.size
         obj.visible = self.visible
         obj.material = self.material
+        obj.object_type = self.object_type
+        obj.color = self.color
+        obj.connectors = [Connector(c.name, c.position, c.direction, c.conn_type) for c in self.connectors]
+        obj.physics_offset = self.physics_offset
         for child in self.children:
             obj.add_child(child.duplicate())
         return obj

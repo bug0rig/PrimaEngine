@@ -38,7 +38,8 @@ class PhysicsEngine:
 
         self._update_shape(body, obj)
 
-        body.position = _Vec3(obj.position.x, obj.position.y, obj.position.z)
+        po = getattr(obj, 'physics_offset', Vector3.zero())
+        body.position = _Vec3(obj.position.x + po.x, obj.position.y + po.y, obj.position.z + po.z)
         body.rotation = _Quat.from_euler(
             obj.rotation.x, obj.rotation.y, obj.rotation.z
         )
@@ -54,14 +55,42 @@ class PhysicsEngine:
         if obj_type == "Sphere":
             body.shape = CollisionShape.make_sphere(obj.size.x / 2)
         elif obj_type == "Part" and getattr(obj, 'shape', 'Box') == "Box":
+            hx, hy, hz = obj.size.x / 2, obj.size.y / 2, obj.size.z / 2
+            if getattr(obj, 'anchored', True):
+                half_extents = [(hx, 0), (hy, 1), (hz, 2)]
+                half_extents.sort(key=lambda e: e[0])
+                mins = half_extents[0][0]
+                maxs = half_extents[2][0]
+                if mins > 0 and mins / maxs < 0.15 and mins < 0.5:
+                    axis = half_extents[0][1]
+                    normal = [0, 0, 0]
+                    offset = 0.0
+                    if axis == 0:
+                        normal[0] = 1.0
+                        offset = obj.position.x + hx
+                    elif axis == 1:
+                        normal[1] = 1.0
+                        offset = obj.position.y + hy
+                    else:
+                        normal[2] = 1.0
+                        offset = obj.position.z + hz
+                    body.shape = CollisionShape.make_plane(
+                        _Vec3(normal[0], normal[1], normal[2]), offset
+                    )
+                    return
+            body.shape = CollisionShape.make_box(hx, hy, hz)
+        elif obj_type == "Player":
             body.shape = CollisionShape.make_box(
                 obj.size.x / 2, obj.size.y / 2, obj.size.z / 2
             )
+            body.restitution = 0.0
+            body.friction = 0.2
         else:
             body.set_static(True)
 
     def _sync_to_body(self, body, obj):
-        body.position = _Vec3(obj.position.x, obj.position.y, obj.position.z)
+        po = getattr(obj, 'physics_offset', Vector3.zero())
+        body.position = _Vec3(obj.position.x + po.x, obj.position.y + po.y, obj.position.z + po.z)
         body.rotation = _Quat.from_euler(
             obj.rotation.x, obj.rotation.y, obj.rotation.z
         )
@@ -72,9 +101,13 @@ class PhysicsEngine:
         body.set_mass(getattr(obj, 'mass', 1.0))
         body.set_static(getattr(obj, 'anchored', True))
         self._apply_physics_material(body, obj)
+        if obj.object_type == "Player":
+            body.restitution = 0.0
+            body.friction = 0.2
 
     def _sync_from_body(self, body, obj):
-        obj.position = Vector3(body.position.x, body.position.y, body.position.z)
+        po = getattr(obj, 'physics_offset', Vector3.zero())
+        obj.position = Vector3(body.position.x - po.x, body.position.y - po.y, body.position.z - po.z)
 
         euler = body.rotation.to_euler()
         obj.rotation = Vector3(euler.x, euler.y, euler.z)
@@ -85,6 +118,30 @@ class PhysicsEngine:
                 body.linear_velocity.y,
                 body.linear_velocity.z,
             )
+
+    def _step_player(self, obj, scene, dt):
+        gravity_val = getattr(scene, 'gravity', Vector3(0, -9.81, 0)).y
+        if not hasattr(obj, 'velocity'):
+            obj.velocity = Vector3(0, 0, 0)
+
+        vel = obj.velocity
+
+        vel.y += gravity_val * dt
+
+        half_h = getattr(obj, 'collision_height', obj.size.y) / 2
+        pos = obj.position
+        obj.position = Vector3(pos.x + vel.x * dt, pos.y + vel.y * dt, pos.z + vel.z * dt)
+
+        origin = Vector3(obj.position.x, obj.position.y + 0.5, obj.position.z)
+        hit = self.raycast(origin, Vector3(0, -1, 0), half_h + 1.0)
+        if hit.hit:
+            floor_y = hit.point.y
+            player_bottom = obj.position.y - half_h
+            if player_bottom <= floor_y:
+                pos = obj.position
+                obj.position = Vector3(pos.x, floor_y + half_h, pos.z)
+                if vel.y < 0:
+                    vel.y = 0
 
     def step(self, scene, dt):
         if not self.enabled:
@@ -128,6 +185,10 @@ class PhysicsEngine:
             body = self._world.get_body(self._body_map[obj.id])
             if body is not None:
                 self._sync_from_body(body, obj)
+
+        for obj in scene.get_all_objects():
+            if obj.object_type == "Player":
+                self._step_player(obj, scene, dt)
 
     def clear(self):
         self._world.clear()

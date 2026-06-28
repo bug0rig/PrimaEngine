@@ -1,6 +1,5 @@
 from OpenGL import GL
-from .math_utils import Vector3, Matrix4
-from .objects import Part, Wedge, Cylinder, Sphere
+from .math_utils import Vector3
 import numpy as np
 import math
 
@@ -171,8 +170,8 @@ def _build_sphere(radius, segments=16):
         for lon in range(segments):
             first = lat * (segments + 1) + lon
             second = first + segments + 1
-            idx.extend([first, second, first + 1])
-            idx.extend([second, second + 1, first + 1])
+            idx.extend([first, first + 1, second])
+            idx.extend([second, first + 1, second + 1])
 
     return np.array(verts, dtype=np.float32), np.array(idx, dtype=np.uint32), np.array(norms, dtype=np.float32)
 
@@ -205,6 +204,114 @@ def _build_cylinder(radius, height, segments=24):
         nxt = (i + 1) % segments
         idx.extend([i + 1, top_start + i, nxt + 1])
         idx.extend([nxt + 1, top_start + i, top_start + nxt])
+
+    verts = np.array(verts, dtype=np.float32)
+    idx = np.array(idx, dtype=np.uint32)
+
+    norms = np.zeros((len(idx), 3), dtype=np.float32)
+    for i in range(0, len(idx), 3):
+        v0 = verts[idx[i]]
+        v1 = verts[idx[i+1]]
+        v2 = verts[idx[i+2]]
+        n = np.cross(v1 - v0, v2 - v0)
+        ln = np.linalg.norm(n)
+        if ln > 1e-8:
+            n = n / ln
+        # Top cap triangles have all vertices at y = +h — flip normal to +Y
+        if abs(v0[1] - h) < 1e-6 and abs(v1[1] - h) < 1e-6 and abs(v2[1] - h) < 1e-6:
+            n = -n
+        norms[i] = norms[i+1] = norms[i+2] = n
+
+    return verts, idx, norms
+
+
+def _build_capsule(radius, height, segments=16):
+    h = height / 2
+    verts = []
+    idx = []
+
+    # Cylinder body vertices
+    # Bottom ring at y = -h, top ring at y = h
+    for i in range(segments):
+        a = 2 * math.pi * i / segments
+        verts.append([radius * math.cos(a), -h, radius * math.sin(a)])
+    for i in range(segments):
+        a = 2 * math.pi * i / segments
+        verts.append([radius * math.cos(a), h, radius * math.sin(a)])
+
+    # Hemisphere cap rings (bottom and top)
+    ring_steps = segments // 2
+    for j in range(1, ring_steps):
+        lat = math.pi * j / (2 * ring_steps)
+        r = radius * math.cos(lat)
+        y = -h - radius * math.sin(lat)
+        for i in range(segments):
+            a = 2 * math.pi * i / segments
+            verts.append([r * math.cos(a), y, r * math.sin(a)])
+    for j in range(1, ring_steps):
+        lat = math.pi * j / (2 * ring_steps)
+        r = radius * math.cos(lat)
+        y = h + radius * math.sin(lat)
+        for i in range(segments):
+            a = 2 * math.pi * i / segments
+            verts.append([r * math.cos(a), y, r * math.sin(a)])
+
+    # Bottom pole
+    bot_pole = len(verts)
+    verts.append([0, -h - radius, 0])
+    # Top pole
+    top_pole = len(verts)
+    verts.append([0, h + radius, 0])
+
+    # Helper: build index for a strip ring
+    def ring_tris(base, nxt_base, segs):
+        for i in range(segs):
+            nxt = (i + 1) % segs
+            idx.append(base + i); idx.append(nxt_base + i); idx.append(nxt_base + nxt)
+            idx.append(base + i); idx.append(nxt_base + nxt); idx.append(base + nxt)
+
+    bot_ring0 = 0            # bottom cylinder ring
+    top_ring0 = segments     # top cylinder ring
+    cap_bot_rings = []       # start indices for bottom hemisphere rings
+    offset = 2 * segments
+    for _ in range(ring_steps - 1):
+        cap_bot_rings.append(offset)
+        offset += segments
+    cap_top_rings = []
+    for _ in range(ring_steps - 1):
+        cap_top_rings.append(offset)
+        offset += segments
+
+    # Cylinder body (connect bottom ring to top ring)
+    ring_tris(bot_ring0, top_ring0, segments)
+
+    # Bottom hemisphere (from bottom ring downward)
+    if cap_bot_rings:
+        ring_tris(cap_bot_rings[0], bot_ring0, segments)  # connect first cap ring to cylinder bottom
+        for j in range(len(cap_bot_rings) - 1):
+            ring_tris(cap_bot_rings[j+1], cap_bot_rings[j], segments)
+        # Connect last cap ring to bottom pole
+        for i in range(segments):
+            nxt = (i + 1) % segments
+            idx.append(bot_pole); idx.append(cap_bot_rings[-1] + i); idx.append(cap_bot_rings[-1] + nxt)
+    else:
+        # No cap rings - connect bottom ring directly to pole
+        for i in range(segments):
+            nxt = (i + 1) % segments
+            idx.append(bot_pole); idx.append(bot_ring0 + i); idx.append(bot_ring0 + nxt)
+
+    # Top hemisphere (from top ring upward)
+    if cap_top_rings:
+        ring_tris(top_ring0, cap_top_rings[0], segments)
+        for j in range(len(cap_top_rings) - 1):
+            ring_tris(cap_top_rings[j], cap_top_rings[j+1], segments)
+        for i in range(segments):
+            nxt = (i + 1) % segments
+            idx.append(top_pole); idx.append(cap_top_rings[-1] + nxt); idx.append(cap_top_rings[-1] + i)
+    else:
+        for i in range(segments):
+            nxt = (i + 1) % segments
+            idx.append(top_pole); idx.append(top_ring0 + nxt); idx.append(top_ring0 + i)
 
     verts = np.array(verts, dtype=np.float32)
     idx = np.array(idx, dtype=np.uint32)
@@ -255,11 +362,20 @@ def get_cylinder_mesh():
     return _mesh_cache[key]
 
 
+def get_capsule_mesh():
+    key = "capsule"
+    if key in _mesh_cache:
+        return _mesh_cache[key]
+    _mesh_cache[key] = _build_capsule(0.5, 1)
+    return _mesh_cache[key]
+
+
 _mesh_map = {
     "Box": get_box_mesh,
     "Wedge": get_wedge_mesh,
     "Sphere": get_sphere_mesh,
     "Cylinder": get_cylinder_mesh,
+    "Player": get_sphere_mesh,
 }
 
 
@@ -287,8 +403,13 @@ class Renderer:
             GL.glBindVertexArray(vao)
 
             positions = np.zeros((len(idx), 3), dtype=np.float32)
+            expanded_norms = np.zeros((len(idx), 3), dtype=np.float32)
             for i, j in enumerate(idx):
                 positions[i] = verts[j]
+                if len(norms) == len(verts):
+                    expanded_norms[i] = norms[j]
+                else:
+                    expanded_norms[i] = norms[i]
 
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, vbo)
             GL.glBufferData(GL.GL_ARRAY_BUFFER, positions.nbytes, positions, GL.GL_STATIC_DRAW)
@@ -296,7 +417,7 @@ class Renderer:
             GL.glEnableVertexAttribArray(0)
 
             GL.glBindBuffer(GL.GL_ARRAY_BUFFER, nbo)
-            GL.glBufferData(GL.GL_ARRAY_BUFFER, norms.nbytes, norms, GL.GL_STATIC_DRAW)
+            GL.glBufferData(GL.GL_ARRAY_BUFFER, expanded_norms.nbytes, expanded_norms, GL.GL_STATIC_DRAW)
             GL.glVertexAttribPointer(1, 3, GL.GL_FLOAT, GL.GL_FALSE, 0, None)
             GL.glEnableVertexAttribArray(1)
 

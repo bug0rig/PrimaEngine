@@ -1,14 +1,15 @@
 from PyQt5.QtWidgets import (
     QToolBar, QAction, QFileDialog, QMessageBox,
-    QSpinBox, QLabel, QInputDialog, QLineEdit,
+    QInputDialog,
 )
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QKeySequence
+from prima.engine.scene import Scene, SceneObject
+from prima.engine.math_utils import Vector3
 from prima.server.serialize import scene_to_dict, scene_from_dict
 from prima.server.protocol import ProtocolMessage
 from prima.server.client import GameClient
 import json
-import os
 import socket
 
 
@@ -33,6 +34,14 @@ class EditorToolbar(QToolBar):
 
         self._add_action("Reset Camera", self._reset_camera, "F")
         self._add_action("Focus Selected", self._focus_selected, "Shift+F")
+        self.addSeparator()
+
+        self._translate_action = self._add_action("Translate", lambda: self._set_gizmo("translate"), "1")
+        self._rotate_action = self._add_action("Rotate", lambda: self._set_gizmo("rotate"), "2")
+        self._scale_action = self._add_action("Scale", lambda: self._set_gizmo("scale"), "3")
+        self.addSeparator()
+        self._add_action("Add Cube", self._add_cube)
+        self._add_action("Add Sphere", self._add_sphere)
         self.addSeparator()
         self._add_action("Upload to Server...", self._upload_to_server)
 
@@ -94,6 +103,10 @@ class EditorToolbar(QToolBar):
             self._runtime_window = None
         self.editor.statusBar().showMessage("Runtime stopped", 3000)
 
+    def _set_gizmo(self, mode):
+        self.editor.viewport.gizmo.mode = mode
+        self.editor.viewport.update()
+
     def _upload_to_server(self):
         host, ok = QInputDialog.getText(self, "Upload Scene", "Server host:")
         if not ok or not host:
@@ -126,6 +139,34 @@ class EditorToolbar(QToolBar):
             self.editor.statusBar().showMessage(f"Uploaded to {host}:{port}/{session}", 3000)
         except (socket.error, ConnectionRefusedError, TimeoutError) as e:
             QMessageBox.critical(self, "Upload Error", str(e))
+
+    def _add_cube(self):
+        self._add_primitive("Part", "Box", (0.7, 0.2, 0.2))
+
+    def _add_sphere(self):
+        self._add_primitive("Sphere", "Sphere", (0.2, 0.5, 0.7))
+
+    def _add_primitive(self, obj_type, name, color):
+        obj = SceneObject(name)
+        obj.object_type = obj_type
+        obj.color = color
+        obj.size = Vector3(1, 1, 1) if obj_type == "Part" else Vector3(0.5, 0.5, 0.5)
+        obj.anchored = False
+        obj.mass = 1.0
+        if obj_type == "Sphere":
+            from prima.engine.objects import Sphere as SphereObj
+            sphere = SphereObj()
+            sphere.name = name
+            sphere.color = color
+            sphere.anchored = False
+            sphere.mass = 1.0
+            obj = sphere
+        root = self.editor.engine.scene.root
+        root.add_child(obj)
+        self.editor.viewport.selected_object = obj
+        self.editor.viewport.object_selected.emit(obj)
+        self.editor.hierarchy.refresh()
+        self.editor.properties.show_object(obj)
 
     def _reset_camera(self):
         self.editor.viewport.reset_camera()
